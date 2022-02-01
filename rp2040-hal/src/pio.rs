@@ -618,7 +618,7 @@ impl<SM: ValidStateMachine> StateMachine<SM, Stopped> {
     }
 }
 
-impl<P: PIOExt, SM: StateMachineIndex> StateMachine<(P, SM), Stopped> {
+impl<P: PIOExt, SM: StateMachineIndex, State> StateMachine<(P, SM), State> {
     /// Restarts the clock dividers for the specified state machines.
     ///
     /// As a result, the clock will be synchronous for the state machines, which is a precondition
@@ -634,21 +634,22 @@ impl<P: PIOExt, SM: StateMachineIndex> StateMachine<(P, SM), Stopped> {
     /// ```
     pub fn synchronize_with<'sm, SM2: StateMachineIndex>(
         &'sm mut self,
-        _other_sm: &'sm mut StateMachine<(P, SM2), Stopped>,
-    ) -> Synchronize<'sm, (P, SM)> {
+        _other_sm: &'sm mut StateMachine<(P, SM2), State>,
+    ) -> Synchronize<'sm, (P, SM), State> {
         let sm_mask = (1 << SM::id()) | (1 << SM2::id());
         Synchronize { sm: self, sm_mask }
     }
+
 }
 
 /// Type which, once destructed, restarts the clock dividers for all selected state machines,
 /// effectively synchronizing them.
-pub struct Synchronize<'sm, SM: ValidStateMachine> {
-    sm: &'sm mut StateMachine<SM, Stopped>,
+pub struct Synchronize<'sm, SM: ValidStateMachine, State> {
+    sm: &'sm mut StateMachine<SM, State>,
     sm_mask: u32,
 }
 
-impl<'sm, P: PIOExt, SM: StateMachineIndex> Synchronize<'sm, (P, SM)> {
+impl<'sm, P: PIOExt, SM: StateMachineIndex, State> Synchronize<'sm, (P, SM), State> {
     /// Adds another state machine to be synchronized.
     pub fn and_with<SM2: StateMachineIndex>(
         mut self,
@@ -658,9 +659,22 @@ impl<'sm, P: PIOExt, SM: StateMachineIndex> Synchronize<'sm, (P, SM)> {
         self.sm_mask |= 1 << SM2::id();
         self
     }
+
+    /// WARNING: This is problematic as it starts the state machines but does
+    /// not change the type to `Running`.
+    pub fn start(
+        self,
+    ) -> Self {
+        let sm_mask = self.sm_mask;
+        // Safety: We only use the atomic alias of the register.
+        unsafe {
+            write_bitmask_set((*self.sm.sm.block).ctrl.as_ptr(), sm_mask as u32);
+        }
+        self
+    }
 }
 
-impl<'sm, SM: ValidStateMachine> Drop for Synchronize<'sm, SM> {
+impl<'sm, SM: ValidStateMachine, State> Drop for Synchronize<'sm, SM, State> {
     fn drop(&mut self) {
         // Restart the clocks of all state machines specified by the mask.
         // Bits 11:8 of CTRL contain CLKDIV_RESTART.
